@@ -1,4 +1,4 @@
-import React, { useRef, useEffect } from 'react';
+import React, { useRef, useEffect, useState } from 'react';
 import {
   Play,
   Pause,
@@ -11,7 +11,8 @@ import {
   ChevronsRight,
   Repeat,
   RotateCcw,
-  Film
+  Film,
+  Sparkles
 } from 'lucide-react';
 import { renderPuppetObjects } from '../utils/puppetEngine';
 
@@ -71,6 +72,7 @@ export default function BottomBar({
   onAddFrame,
   onDuplicateFrame,
   onDeleteFrame,
+  onOpenCreateObjectDialog,
   isPlaying,
   setIsPlaying,
   playbackFrameIndex,
@@ -80,6 +82,21 @@ export default function BottomBar({
   setIsLooping
 }) {
   const timelineScrollRef = useRef(null);
+  const [contextMenu, setContextMenu] = useState(null);
+
+  // Close context menu on outside click or escape
+  useEffect(() => {
+    const handleClickOutside = () => setContextMenu(null);
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') setContextMenu(null);
+    };
+    window.addEventListener('click', handleClickOutside);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('click', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   // Active frame index whether playing or editing
   const activeIndex = isPlaying ? playbackFrameIndex : currentFrameIndex;
@@ -158,7 +175,14 @@ export default function BottomBar({
           <button
             type="button"
             className={`play-btn ${isPlaying ? 'playing' : ''}`}
-            onClick={() => setIsPlaying(!isPlaying)}
+            onClick={() => {
+              if (isPlaying) {
+                setCurrentFrameIndex(playbackFrameIndex);
+                setIsPlaying(false);
+              } else {
+                setIsPlaying(true);
+              }
+            }}
             title={isPlaying ? 'Pause Animation (Space)' : 'Play Animation (Space)'}
           >
             {isPlaying ? <Pause size={18} /> : <Play size={18} className="play-icon-offset" />}
@@ -250,7 +274,16 @@ export default function BottomBar({
                 onClick={() => {
                   if (!isPlaying) setCurrentFrameIndex(index);
                 }}
-                title={`Frame #${index + 1}`}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    frameIndex: index
+                  });
+                }}
+                title={`Frame #${index + 1} (Right-click for options)`}
               >
                 <div className="frame-card-header">
                   <span className="frame-badge">#{index + 1}</span>
@@ -311,6 +344,65 @@ export default function BottomBar({
           </button>
         </div>
       </div>
+
+      {/* Floating Context Menu on Frame Right-Click */}
+      {contextMenu && (
+        <div
+          className="frame-context-menu"
+          style={{
+            position: 'fixed',
+            left: `${Math.max(10, Math.min(contextMenu.x, window.innerWidth - 220))}px`,
+            top: `${Math.max(10, contextMenu.y - 140)}px`,
+            zIndex: 9999
+          }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <div className="context-menu-header">
+            <span>Frame #{contextMenu.frameIndex + 1}</span>
+          </div>
+
+          <button
+            type="button"
+            className="context-menu-item primary"
+            onClick={() => {
+              const target = contextMenu.frameIndex;
+              setContextMenu(null);
+              if (onOpenCreateObjectDialog) onOpenCreateObjectDialog(target);
+            }}
+          >
+            <Sparkles size={15} />
+            <span>Create Object</span>
+          </button>
+
+          <button
+            type="button"
+            className="context-menu-item"
+            onClick={() => {
+              const target = contextMenu.frameIndex;
+              setContextMenu(null);
+              if (onDuplicateFrame) onDuplicateFrame(target);
+            }}
+          >
+            <Copy size={15} />
+            <span>Duplicate Frame</span>
+          </button>
+
+          {frames.length > 1 && (
+            <button
+              type="button"
+              className="context-menu-item danger"
+              onClick={() => {
+                const target = contextMenu.frameIndex;
+                setContextMenu(null);
+                if (onDeleteFrame) onDeleteFrame(target);
+              }}
+            >
+              <Trash2 size={15} />
+              <span>Delete Frame</span>
+            </button>
+          )}
+        </div>
+      )}
     </footer>
   );
 }

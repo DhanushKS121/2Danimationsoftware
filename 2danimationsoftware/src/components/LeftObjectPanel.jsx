@@ -1,5 +1,5 @@
 import React from 'react';
-import { Box, Crop, Plus, Trash2, Bone, Move, RotateCw, Layers } from 'lucide-react';
+import { Box, Crop, Plus, Trash2, Bone, Move, RotateCw, Layers, Sparkles } from 'lucide-react';
 
 export default function LeftObjectPanel({
   objects = [],
@@ -7,7 +7,8 @@ export default function LeftObjectPanel({
   onSelectObject,
   onStartSelectArea,
   isSelectingArea,
-  onDeleteObject
+  onDeleteObject,
+  onOpenCreateObject
 }) {
   return (
     <aside className="left-object-panel">
@@ -21,8 +22,19 @@ export default function LeftObjectPanel({
         <span className="panel-subtitle">Rigged Drawing Puppets</span>
       </div>
 
-      {/* Select Area / Create Object Button */}
+      {/* Create Object & Select Area Buttons */}
       <div className="left-panel-actions">
+        {onOpenCreateObject && (
+          <button
+            type="button"
+            className="left-panel-create-btn"
+            onClick={onOpenCreateObject}
+            title="Draw a new puppet object in dialog modal"
+          >
+            <Sparkles size={15} />
+            <span>+ Create Object</span>
+          </button>
+        )}
         <button
           type="button"
           className={`select-area-btn ${isSelectingArea ? 'active' : ''}`}
@@ -30,7 +42,7 @@ export default function LeftObjectPanel({
           title="Drag a rectangle over your drawing on the canvas to create an object"
         >
           <Crop size={15} />
-          <span>{isSelectingArea ? 'Drag Box on Canvas...' : '+ Select Area'}</span>
+          <span>{isSelectingArea ? 'Drag Box on Canvas...' : 'Select Area'}</span>
         </button>
       </div>
 
@@ -53,7 +65,9 @@ export default function LeftObjectPanel({
           <div className="objects-items-list">
             {objects.map((obj, index) => {
               const isSelected = obj.id === selectedObjectId;
-              const boneCount = obj.bones ? obj.bones.length : 0;
+              const userPoints = obj.bones ? obj.bones.filter((b) => !b.isMidPoint) : [];
+              const pointCount = userPoints.length;
+              const jointCount = obj.bones ? obj.bones.filter((b) => b.parent && !b.isMidPoint).length : 0;
               const angleDeg = Math.round(((obj.rotation || 0) * 180) / Math.PI);
 
               return (
@@ -75,7 +89,11 @@ export default function LeftObjectPanel({
                     <div className="object-meta-row">
                       <span className="meta-pill bones-pill">
                         <Bone size={10} />
-                        <span>{boneCount} {boneCount === 1 ? 'Bone' : 'Bones'}</span>
+                        <span>
+                          {pointCount === 0
+                            ? 'Mid Pt only'
+                            : `${pointCount} ${pointCount === 1 ? 'Pt' : 'Pts'}${jointCount > 0 ? ` • ${jointCount} Jt` : ''}`}
+                        </span>
                       </span>
                       {angleDeg !== 0 && (
                         <span className="meta-pill angle-pill">
@@ -109,11 +127,11 @@ export default function LeftObjectPanel({
         <div className="left-panel-footer">
           <div className="footer-step">
             <span className="step-num">1</span>
-            <span>Click <strong>Bones</strong> to add joints on drawing</span>
+            <span>Click <strong>Point</strong> to add points on drawing</span>
           </div>
           <div className="footer-step">
             <span className="step-num">2</span>
-            <span>Use <strong>Rotation</strong> or <strong>Move</strong> to animate drawing</span>
+            <span>Click <strong>Joint</strong> & tap between points to joint</span>
           </div>
         </div>
       )}

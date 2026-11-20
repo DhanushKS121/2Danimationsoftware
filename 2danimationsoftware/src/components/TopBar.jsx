@@ -6,6 +6,8 @@ import {
   Move,
   Bone,
   RotateCw,
+  CircleDot,
+  Link2,
   User,
   RotateCcw,
   Pencil,
@@ -37,24 +39,17 @@ import {
 const MODES = [
   {
     id: 'draw',
-    name: 'Draw Mode',
+    name: 'Normal Mode',
     icon: PenTool,
     desc: 'Classic frame-by-frame animation',
-    badge: 'Drawing'
-  },
-  {
-    id: 'movie',
-    name: 'Movie Mode',
-    icon: Video,
-    desc: 'Auto-creates frames as you write at live speed',
-    badge: 'Live REC'
+    badge: 'Normal'
   },
   {
     id: 'object',
     name: 'Object Mode',
     icon: Box,
     desc: 'Draw, bones, joints, move & rotate keyframes',
-    badge: 'Bones'
+    badge: 'Objects'
   }
 ];
 
@@ -90,6 +85,7 @@ export default function TopBar({
   setObjectTool,
   isSelectingArea = false,
   onStartSelectArea,
+  onOpenCreateObjectDialog,
   onAddStickmanRig,
   onResetRigPose,
   onDeleteSelectedJoint,
@@ -159,11 +155,11 @@ export default function TopBar({
 
       {/* Main Tools Section */}
       <div className="topbar-section tools-section">
-        {/* Mode Dropdown: Draw Mode, Movie Mode, Object Mode */}
+        {/* Mode Dropdown: Normal Mode vs Object Mode */}
         <div className="tool-dropdown-container mode-dropdown-container">
           <button
             type="button"
-            className={`tool-btn mode-selector-btn ${appMode === 'movie' ? 'movie-mode-active' : ''} ${appMode === 'object' ? 'object-mode-active' : ''}`}
+            className={`tool-btn mode-selector-btn ${appMode === 'object' ? 'object-mode-active' : ''}`}
             onClick={() => {
               setShowModeMenu(!showModeMenu);
               setShowPencilMenu(false);
@@ -172,13 +168,9 @@ export default function TopBar({
               setShowExportMenu(false);
               setShowOnionMenu(false);
             }}
-            title="Switch Mode: Draw mode, Movie mode, Object mode"
+            title="Switch Mode: Normal Mode or Object Mode"
           >
-            {appMode === 'movie' ? (
-              <span className="live-rec-dot" />
-            ) : (
-              <currentModeObj.icon size={17} />
-            )}
+            <currentModeObj.icon size={17} />
             <span className="tool-label mode-name">{currentModeObj.name}</span>
             <ChevronDown size={12} className="chevron-icon" />
           </button>
@@ -271,6 +263,17 @@ export default function TopBar({
               )}
             </div>
 
+            {/* Create Object: Opens drawing dialog */}
+            <button
+              type="button"
+              className="tool-btn object-tool-btn create-obj-tool-btn"
+              onClick={onOpenCreateObjectDialog}
+              title="Create Object: Draw a new rigged puppet object in dialog"
+            >
+              <Sparkles size={16} />
+              <span className="tool-label">+ Create Object</span>
+            </button>
+
             {/* Select Area Tool: Box select drawing to create an object in left toolbar */}
             <button
               type="button"
@@ -280,6 +283,34 @@ export default function TopBar({
             >
               <Square size={17} />
               <span className="tool-label">Select Area</span>
+            </button>
+
+            {/* Point Tool: Add points on drawing */}
+            <button
+              type="button"
+              className={`tool-btn object-tool-btn ${objectTool === 'point' ? 'active point-active' : ''}`}
+              onClick={() => {
+                setObjectTool('point');
+                setShowPencilMenu(false);
+              }}
+              title="Point Tool: Click on drawing to add points"
+            >
+              <CircleDot size={17} />
+              <span className="tool-label">Point</span>
+            </button>
+
+            {/* Joint Tool: Tap between points to joint */}
+            <button
+              type="button"
+              className={`tool-btn object-tool-btn ${objectTool === 'joint' ? 'active joint-active' : ''}`}
+              onClick={() => {
+                setObjectTool('joint');
+                setShowPencilMenu(false);
+              }}
+              title="Joint Tool: Tap between points (or click two points) to connect them with a joint"
+            >
+              <Link2 size={17} />
+              <span className="tool-label">Joint</span>
             </button>
 
             {/* Move Tool */}
@@ -294,20 +325,6 @@ export default function TopBar({
             >
               <Move size={17} />
               <span className="tool-label">Move</span>
-            </button>
-
-            {/* Bones Tool */}
-            <button
-              type="button"
-              className={`tool-btn object-tool-btn ${objectTool === 'bones' ? 'active bones-active' : ''}`}
-              onClick={() => {
-                setObjectTool('bones');
-                setShowPencilMenu(false);
-              }}
-              title="Bones Tool: Click joints to connect new bones and build a skeleton"
-            >
-              <Bone size={17} />
-              <span className="tool-label">Bones</span>
             </button>
 
             {/* Rotation Tool */}

@@ -6,6 +6,53 @@
  */
 
 /**
+ * Creates initial skeleton with TWO points and a JOINT connecting them.
+ * "in bone dont give a point. in bones give two point and joint"
+ */
+export function createInitialBones(x, y, width, height, id) {
+  const isTall = height >= width;
+  let p1X, p1Y, p2X, p2Y;
+
+  if (isTall) {
+    p1X = Math.round(x + width / 2);
+    p1Y = Math.round(y + Math.max(16, height * 0.22));
+    p2X = Math.round(x + width / 2);
+    p2Y = Math.round(y + Math.min(height - 16, height * 0.78));
+  } else {
+    p1X = Math.round(x + Math.max(16, width * 0.22));
+    p1Y = Math.round(y + height / 2);
+    p2X = Math.round(x + Math.min(width - 16, width * 0.78));
+    p2Y = Math.round(y + height / 2);
+  }
+
+  const p1Id = 'pt1_' + id;
+  const p2Id = 'pt2_' + id;
+
+  return [
+    {
+      id: p1Id,
+      name: 'Point #1',
+      x: p1X,
+      y: p1Y,
+      initX: p1X,
+      initY: p1Y,
+      isRoot: true,
+      parent: null
+    },
+    {
+      id: p2Id,
+      name: 'Point #2',
+      x: p2X,
+      y: p2Y,
+      initX: p2X,
+      initY: p2Y,
+      isRoot: false,
+      parent: p1Id // Joint connecting Point 1 and Point 2!
+    }
+  ];
+}
+
+/**
  * Creates an object from a rectangular selection of the canvas
  */
 export function createObjectFromCanvasSelection(canvas, rect, existingCount = 0) {
@@ -47,6 +94,19 @@ export function createObjectFromCanvasSelection(canvas, rect, existingCount = 0)
 
   const id = 'obj_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
 
+  // Default: one mid point (pivot / center), not considered for joint
+  const midPoint = {
+    id: 'mid_' + id,
+    name: 'Mid Point',
+    x: pivot.x,
+    y: pivot.y,
+    initX: pivot.x,
+    initY: pivot.y,
+    isRoot: true,
+    isMidPoint: true,
+    parent: null
+  };
+
   return {
     id,
     name: `Object #${existingCount + 1}`,
@@ -59,19 +119,7 @@ export function createObjectFromCanvasSelection(canvas, rect, existingCount = 0)
     rotation: 0,
     baseAngle: 0,
     pivot,
-    bones: [
-      // Initial root pivot joint
-      {
-        id: 'joint_root_' + id,
-        name: 'Pivot Joint',
-        x: pivot.x,
-        y: pivot.y,
-        initX: pivot.x,
-        initY: pivot.y,
-        isRoot: true,
-        parent: null
-      }
-    ]
+    bones: [midPoint]
   };
 }
 
@@ -118,6 +166,13 @@ export function moveJoint(obj, jointId, newX, newY) {
 
   const target = obj.bones.find((b) => b.id === jointId);
   if (!target) return obj;
+
+  // If moving the mid point, translate entire object & its points
+  if (target.isMidPoint) {
+    const dx = newX - target.x;
+    const dy = newY - target.y;
+    return translateObject(obj, dx, dy);
+  }
 
   const isRoot = target.isRoot;
 
@@ -281,6 +336,130 @@ export function addBoneToObject(obj, x, y) {
     pivot: newPivot,
     bones: updatedBones
   };
+}
+
+/**
+ * POINT TOOL: Adds an individual point on the drawing.
+ * "in point we add points."
+ */
+export function addPointToObject(obj, x, y) {
+  if (!obj) return obj;
+  const bones = obj.bones || [];
+  const userPoints = bones.filter((b) => !b.isMidPoint);
+
+  const newPoint = {
+    id: 'pt_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
+    name: `Point #${userPoints.length + 1}`,
+    x,
+    y,
+    initX: x,
+    initY: y,
+    isRoot: false,
+    isMidPoint: false,
+    parent: null // standalone point waiting to be jointed!
+  };
+
+  return {
+    ...obj,
+    bones: [...bones, newPoint]
+  };
+}
+
+/**
+ * JOINT TOOL: Connects two points together with a joint / bone segment.
+ * "in joint we tap bw point that point should joint"
+ */
+export function jointTwoPoints(obj, pointIdA, pointIdB) {
+  if (!obj || !obj.bones || pointIdA === pointIdB) return obj;
+  const ptA = obj.bones.find((b) => b.id === pointIdA);
+  const ptB = obj.bones.find((b) => b.id === pointIdB);
+  if (!ptA || !ptB) return obj;
+
+  // Mid point is NOT considered for joint: "dont consider it for joint"
+  if (ptA.isMidPoint || ptB.isMidPoint) return obj;
+
+  // If already connected directly, nothing to do
+  if (ptB.parent === ptA.id || ptA.parent === ptB.id) return obj;
+
+  // Helper to check if ancestor to prevent cycle
+  const isAncestor = (ancestorId, childId, allBones) => {
+    let cur = allBones.find((b) => b.id === childId);
+    while (cur && cur.parent) {
+      if (cur.parent === ancestorId) return true;
+      cur = allBones.find((b) => b.id === cur.parent);
+    }
+    return false;
+  };
+
+  let parentId = ptA.id;
+  let childId = ptB.id;
+
+  if (isAncestor(ptB.id, ptA.id, obj.bones)) {
+    // ptB is already an ancestor of ptA; ptA must be child
+    parentId = ptB.id;
+    childId = ptA.id;
+  } else if (ptB.isRoot || (ptB.parent && !ptA.parent)) {
+    parentId = ptB.id;
+    childId = ptA.id;
+  }
+
+  const updatedBones = obj.bones.map((b) => {
+    if (b.id === childId) {
+      return {
+        ...b,
+        parent: parentId,
+        isRoot: false
+      };
+    }
+    return b;
+  });
+
+  return {
+    ...obj,
+    bones: updatedBones
+  };
+}
+
+/**
+ * Detects if a coordinate (x, y) is tapped between two existing points.
+ * "in joint we tap bw point that point should joint"
+ */
+export function findPointsToJointBetween(x, y, bones, maxDist = 45) {
+  if (!bones) return null;
+  // Exclude mid point: "dont consider it for joint"
+  const jointableBones = bones.filter((b) => !b.isMidPoint);
+  if (jointableBones.length < 2) return null;
+  let bestPair = null;
+  let bestDist = maxDist;
+
+  for (let i = 0; i < jointableBones.length; i++) {
+    for (let j = i + 1; j < jointableBones.length; j++) {
+      const pA = jointableBones[i];
+      const pB = jointableBones[j];
+
+      // Check if already directly jointed
+      if (pA.parent === pB.id || pB.parent === pA.id) continue;
+
+      const x1 = pA.x, y1 = pA.y;
+      const x2 = pB.x, y2 = pB.y;
+      const l2 = (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1);
+      if (l2 < 64) continue; // too close
+
+      // Projection parameter t
+      const t = ((x - x1) * (x2 - x1) + (y - y1) * (y2 - y1)) / l2;
+      // Must be between the two points (not beyond endpoints)
+      if (t >= 0.08 && t <= 0.92) {
+        const projX = x1 + t * (x2 - x1);
+        const projY = y1 + t * (y2 - y1);
+        const dist = Math.hypot(x - projX, y - projY);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestPair = { pA, pB, t, projX, projY, dist };
+        }
+      }
+    }
+  }
+  return bestPair;
 }
 
 /**
@@ -581,15 +760,25 @@ export function renderPuppetObjects(ctx, objects, imageCache = {}, options = {})
       }
 
       // Draw joint handles (clickable points)
+      const jointFirstPointId = options.jointFirstPointId;
       for (const joint of obj.bones) {
+        const isJointFirst = joint.id === jointFirstPointId;
         const isSelectedJoint = joint.id === selectedJointId;
         const isHovered = joint.id === hoverJointId;
-        const radius = joint.isRoot ? 11 : isSelectedJoint ? 10 : isHovered ? 9 : 7;
+        const radius = isJointFirst ? 12 : joint.isRoot ? 11 : isSelectedJoint ? 10 : isHovered ? 9 : 7;
 
         ctx.beginPath();
         ctx.arc(joint.x, joint.y, radius, 0, Math.PI * 2);
 
-        if (joint.isRoot) {
+        if (joint.isMidPoint) {
+          ctx.fillStyle = '#f59e0b'; // Gold midpoint anchor (not for joint)
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2.5;
+        } else if (isJointFirst) {
+          ctx.fillStyle = '#9333ea'; // Purple for active joint source
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 3;
+        } else if (joint.isRoot) {
           ctx.fillStyle = '#f59e0b'; // Gold pivot joint
           ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 2.5;
@@ -597,14 +786,33 @@ export function renderPuppetObjects(ctx, objects, imageCache = {}, options = {})
           ctx.fillStyle = isSelectedJoint ? '#ea580c' : '#f97316'; // Orange rotation joint
           ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 2.2;
+        } else if (activeTool === 'joint') {
+          ctx.fillStyle = isSelectedJoint ? '#9333ea' : isHovered ? '#a855f7' : '#7c3aed'; // Purple joint points
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
+        } else if (activeTool === 'point') {
+          ctx.fillStyle = isSelectedJoint ? '#059669' : isHovered ? '#34d399' : '#10b981'; // Green add point mode
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
         } else {
-          ctx.fillStyle = isSelectedJoint ? '#1d4ed8' : '#3b82f6'; // Blue move/bones point
+          ctx.fillStyle = isSelectedJoint ? '#1d4ed8' : '#3b82f6'; // Blue move point
           ctx.strokeStyle = '#ffffff';
           ctx.lineWidth = 2;
         }
 
         ctx.fill();
         ctx.stroke();
+
+        if (isJointFirst) {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(joint.x, joint.y, 16, 0, Math.PI * 2);
+          ctx.strokeStyle = '#c084fc';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.restore();
+        }
 
         // Center dot
         ctx.beginPath();

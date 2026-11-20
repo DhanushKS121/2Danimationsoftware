@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import TopBar from './components/TopBar';
 import CanvasArea from './components/CanvasArea';
 import LeftObjectPanel from './components/LeftObjectPanel';
+import RightToolBar from './components/RightToolBar';
+import CreateObjectModal from './components/CreateObjectModal';
 import BottomBar from './components/BottomBar';
 import { exportAsGif, exportAsZip, exportSingleFrame } from './utils/gifExport';
 import { cloneObjects, renderPuppetObjects, interpolateObjects } from './utils/puppetEngine';
@@ -67,6 +69,9 @@ export default function App() {
   const [fps, setFps] = useState(10);
   const [isLooping, setIsLooping] = useState(true);
 
+  // Drawing Dialog Modal state
+  const [isCreateObjectModalOpen, setIsCreateObjectModalOpen] = useState(false);
+
   // History stack
   const [history, setHistory] = useState([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
@@ -112,6 +117,29 @@ export default function App() {
     setIsSelectingArea((prev) => !prev);
   }, []);
 
+  // Open the drawing dialog to create a new object
+  const handleOpenCreateObjectDialog = useCallback((frameIdx) => {
+    if (typeof frameIdx === 'number') {
+      setCurrentFrameIndex(frameIdx);
+    }
+    setIsCreateObjectModalOpen(true);
+  }, []);
+
+  // When user draws and creates an object in the modal dialog:
+  // Automatically switch to Object Mode, add to left toolbar and select it!
+  const handleCreateObjectFromModal = useCallback((newObj) => {
+    setFrameObjects((prev) => {
+      const next = [...prev];
+      const cur = next[currentFrameIndex] || [];
+      next[currentFrameIndex] = [...cur, newObj];
+      return next;
+    });
+    setAppMode('object');
+    setSelectedObjectId(newObj.id);
+    setObjectTool('point');
+    setIsCreateObjectModalOpen(false);
+  }, [currentFrameIndex]);
+
   // When user selects an area of their drawing on canvas -> creates an object in left toolbar
   const handleObjectCreated = useCallback((newObj) => {
     setFrameObjects((prev) => {
@@ -122,8 +150,7 @@ export default function App() {
     });
     setSelectedObjectId(newObj.id);
     setIsSelectingArea(false);
-    // Switch to bones tool so user can immediately click on drawing to add bones!
-    setObjectTool('bones');
+    setObjectTool('point');
   }, [currentFrameIndex]);
 
   // Update object transformation (move, rotation, bone joint additions)
@@ -208,17 +235,28 @@ export default function App() {
   }, []);
 
   // Movie mode live updates
-  const handleMovieLiveUpdate = useCallback((liveFrames) => {
+  const handleMovieLiveUpdate = useCallback((liveFrames, currentPos) => {
     if (!liveFrames || liveFrames.length === 0) return;
     setFrames(liveFrames);
-    setCurrentFrameIndex(liveFrames.length - 1);
+    if (currentPos !== undefined) {
+      setCurrentFrameIndex(Math.min(currentPos, liveFrames.length - 1));
+    }
   }, []);
 
-  const handleMovieCommit = useCallback((recordedFrames) => {
+  const handleMovieCommit = useCallback((recordedFrames, commitFrameIndex) => {
     if (!recordedFrames || recordedFrames.length === 0) return;
     setFrames(recordedFrames);
-    setCurrentFrameIndex(recordedFrames.length - 1);
+    const targetIdx = commitFrameIndex !== undefined ? Math.min(commitFrameIndex, recordedFrames.length - 1) : recordedFrames.length - 1;
+    setCurrentFrameIndex(targetIdx);
     setPlaybackFrameIndex(0);
+    setFrameObjects((prev) => {
+      if (prev.length >= recordedFrames.length) return prev;
+      const next = [...prev];
+      while (next.length < recordedFrames.length) {
+        next.push([]);
+      }
+      return next;
+    });
   }, []);
 
   // Undo / Redo
@@ -378,7 +416,12 @@ export default function App() {
 
       if (e.code === 'Space') {
         e.preventDefault();
-        setIsPlaying((prev) => !prev);
+        setIsPlaying((prev) => {
+          if (prev) {
+            setCurrentFrameIndex(playbackFrameIndex);
+          }
+          return !prev;
+        });
       } else if (e.code === 'ArrowLeft' && !isPlaying) {
         e.preventDefault();
         setCurrentFrameIndex((prev) => Math.max(0, prev - 1));
@@ -505,6 +548,7 @@ export default function App() {
         setObjectTool={setObjectTool}
         isSelectingArea={isSelectingArea}
         onStartSelectArea={handleStartSelectArea}
+        onOpenCreateObjectDialog={() => handleOpenCreateObjectDialog(currentFrameIndex)}
         activeTool={activeTool}
         setActiveTool={setActiveTool}
         pencilType={pencilType}
@@ -542,7 +586,7 @@ export default function App() {
         isExporting={isExporting}
       />
 
-      {/* Middle Workspace: Left Object Panel (in Object Mode) + 16:9 Canvas */}
+      {/* Middle Workspace: Left Object Panel (in Object Mode) + 16:9 Canvas + Right Tool Bar */}
       <div className="workspace-middle-container">
         {appMode === 'object' && (
           <LeftObjectPanel
@@ -552,6 +596,7 @@ export default function App() {
             onStartSelectArea={handleStartSelectArea}
             isSelectingArea={isSelectingArea}
             onDeleteObject={handleDeleteObject}
+            onOpenCreateObject={() => handleOpenCreateObjectDialog(currentFrameIndex)}
           />
         )}
 
@@ -567,6 +612,7 @@ export default function App() {
           onUpdateObject={handleUpdateObject}
           onPoseModified={handlePoseModified}
           onObjectCreated={handleObjectCreated}
+          onOpenCreateObjectDialog={handleOpenCreateObjectDialog}
           isSelectingArea={isSelectingArea}
           setIsSelectingArea={setIsSelectingArea}
           activeTool={activeTool}
@@ -591,6 +637,36 @@ export default function App() {
           playbackFrameIndex={playbackFrameIndex}
           pushHistory={pushHistory}
         />
+
+        {/* Right Tool Bar: Option to Create Object, Rigging Tools, Object Properties */}
+        <RightToolBar
+          appMode={appMode}
+          setAppMode={handleSetAppMode}
+          objectTool={objectTool}
+          setObjectTool={setObjectTool}
+          onOpenCreateObjectDialog={() => handleOpenCreateObjectDialog(currentFrameIndex)}
+          onStartSelectArea={handleStartSelectArea}
+          isSelectingArea={isSelectingArea}
+          selectedObject={currentObjects.find((o) => o.id === selectedObjectId) || null}
+          onDeleteObject={handleDeleteObject}
+          onResetPose={() => {
+            if (selectedObjectId) {
+              setFrameObjects((prev) => {
+                const next = [...prev];
+                const cur = next[currentFrameIndex] || [];
+                next[currentFrameIndex] = cur.map((o) => {
+                  if (o.id !== selectedObjectId) return o;
+                  return {
+                    ...o,
+                    rotation: 0,
+                    bones: o.bones.map((b) => ({ ...b, x: b.initX, y: b.initY }))
+                  };
+                });
+                return next;
+              });
+            }
+          }}
+        />
       </div>
 
       {/* Bottom Bar: Timeline with Number of Frames, Playback & Keyframe Center Frames Animation */}
@@ -604,6 +680,7 @@ export default function App() {
         onAddFrame={handleAddFrame}
         onDuplicateFrame={handleDuplicateFrame}
         onDeleteFrame={handleDeleteFrame}
+        onOpenCreateObjectDialog={handleOpenCreateObjectDialog}
         isPlaying={isPlaying}
         setIsPlaying={setIsPlaying}
         playbackFrameIndex={playbackFrameIndex}
@@ -611,6 +688,14 @@ export default function App() {
         setFps={setFps}
         isLooping={isLooping}
         setIsLooping={setIsLooping}
+      />
+
+      {/* Create Object Drawing Dialog Modal */}
+      <CreateObjectModal
+        isOpen={isCreateObjectModalOpen}
+        onClose={() => setIsCreateObjectModalOpen(false)}
+        onCreateObject={handleCreateObjectFromModal}
+        existingCount={currentObjects.length}
       />
     </div>
   );

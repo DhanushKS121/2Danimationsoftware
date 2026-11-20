@@ -1,11 +1,15 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import {
   createObjectFromCanvasSelection,
+  createInitialBones,
   translateObject,
   rotateObject,
   moveJoint,
   rotateBone,
   addBoneToObject,
+  addPointToObject,
+  jointTwoPoints,
+  findPointsToJointBetween,
   renderPuppetObjects
 } from '../utils/puppetEngine';
 
@@ -16,7 +20,7 @@ export default function CanvasArea({
   appMode = 'draw',
   fps = 10,
   // Object / Puppet mode props
-  objectTool = 'move', // 'draw' | 'move' | 'bones' | 'rotate'
+  objectTool = 'move', // 'draw' | 'move' | 'point' | 'joint' | 'rotate'
   objects = [],
   previousObjects = [],
   selectedObjectId,
@@ -24,6 +28,7 @@ export default function CanvasArea({
   onUpdateObject,
   onPoseModified,
   onObjectCreated,
+  onOpenCreateObjectDialog,
   isSelectingArea = false,
   setIsSelectingArea,
   // Drawing tools
@@ -74,10 +79,16 @@ export default function CanvasArea({
   const dragStartCoordsRef = useRef(null);
   const [selectedJointId, setSelectedJointId] = useState(null);
   const [hoverJointId, setHoverJointId] = useState(null);
+  const [jointFirstPointId, setJointFirstPointId] = useState(null);
 
-  // Movie mode sequential frame recording
+  // Movie mode layered multi-stroke recording: both lines are preserved!
   const movieFramesRef = useRef([]);
+  const existingMovieFramesRef = useRef([]);
   const movieTimerRef = useRef(null);
+  const strokeCanvasRef = useRef(null);
+  const movieStartIndexRef = useRef(0);
+  const movieFrameTickRef = useRef(0);
+  const frameCanvasesRef = useRef({});
 
   const [startPoint, setStartPoint] = useState(null);
   const [lastPoint, setLastPoint] = useState(null);
@@ -93,7 +104,52 @@ export default function CanvasArea({
   // Selected object
   const selectedObject = objects.find((o) => o.id === selectedObjectId) || objects[0] || null;
 
-  // Keep movieFramesRef in sync with external frame resets
+  // Helper to composite stroke canvas on top of a base frame canvas
+  const compositeStrokeOntoBase = useCallback((baseCanvas, strokeCanvas) => {
+    const result = document.createElement('canvas');
+    result.width = CANVAS_WIDTH;
+    result.height = CANVAS_HEIGHT;
+    const ctx = result.getContext('2d');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    if (baseCanvas) {
+      ctx.drawImage(baseCanvas, 0, 0);
+    }
+    if (strokeCanvas) {
+      ctx.drawImage(strokeCanvas, 0, 0);
+    }
+    return result;
+  }, []);
+
+  // Helper to get or create an in-memory HTMLCanvasElement for any frame
+  const getFrameCanvas = useCallback((index, dataUrl) => {
+    if (frameCanvasesRef.current[index]) {
+      return frameCanvasesRef.current[index];
+    }
+    const c = document.createElement('canvas');
+    c.width = CANVAS_WIDTH;
+    c.height = CANVAS_HEIGHT;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    if (dataUrl) {
+      const img = new Image();
+      img.src = dataUrl;
+      if (img.complete) {
+        ctx.drawImage(img, 0, 0);
+      } else {
+        img.onload = () => {
+          ctx.drawImage(img, 0, 0);
+        };
+      }
+    }
+
+    frameCanvasesRef.current[index] = c;
+    return c;
+  }, []);
+
+  // Keep movieFramesRef in sync with all frames
   useEffect(() => {
     if (!isDrawingRef.current) {
       movieFramesRef.current = [...frames];
@@ -183,6 +239,7 @@ export default function CanvasArea({
           selectedObjectId,
           selectedJointId,
           hoverJointId,
+          jointFirstPointId,
           boneWidth: strokeSize
         });
       }
@@ -439,14 +496,64 @@ export default function CanvasArea({
         }
       }
 
-      // 2B. Bones Tool: Click on drawing to add bone joint
+      // 2B. Point Tool: "in point we add points"
+      if (objectTool === 'point') {
+        let targetObj = hit ? hit.object : selectedObject;
+        if (targetObj) {
+          const updatedObj = addPointToObject(targetObj, coords.x, coords.y);
+          onUpdateObject(updatedObj);
+          if (onPoseModified) onPoseModified(currentFrameIndex);
+          renderCanvasContent();
+        }
+        return;
+      }
+
+      // 2C. Joint Tool: "in joint we tap bw point that point should joint"
+      if (objectTool === 'joint') {
+        let targetObj = hit ? hit.object : selectedObject;
+        if (targetObj && targetObj.bones) {
+          // If clicked directly on a joint handle (excluding mid point):
+          if (hit && hit.joint && !hit.joint.isMidPoint) {
+            if (!jointFirstPointId) {
+              setJointFirstPointId(hit.joint.id);
+              setSelectedJointId(hit.joint.id);
+              renderCanvasContent();
+            } else {
+              if (hit.joint.id !== jointFirstPointId) {
+                const updatedObj = jointTwoPoints(targetObj, jointFirstPointId, hit.joint.id);
+                onUpdateObject(updatedObj);
+                if (onPoseModified) onPoseModified(currentFrameIndex);
+                setJointFirstPointId(null);
+                renderCanvasContent();
+              } else {
+                setJointFirstPointId(null);
+                renderCanvasContent();
+              }
+            }
+            return;
+          }
+
+          // If tapped strictly between two points (mid point excluded):
+          const candidate = findPointsToJointBetween(coords.x, coords.y, targetObj.bones);
+          if (candidate) {
+            const updatedObj = jointTwoPoints(targetObj, candidate.pA.id, candidate.pB.id);
+            onUpdateObject(updatedObj);
+            if (onPoseModified) onPoseModified(currentFrameIndex);
+            setJointFirstPointId(null);
+            renderCanvasContent();
+            return;
+          }
+        }
+        return;
+      }
+
+      // 2D. Bones Tool (adds points/bones)
       if (objectTool === 'bones') {
         let targetObj = hit ? hit.object : selectedObject;
-
-        // If no object exists yet, or clicked outside, add to selected object
         if (targetObj) {
-          const updatedObj = addBoneToObject(targetObj, coords.x, coords.y);
+          const updatedObj = addPointToObject(targetObj, coords.x, coords.y);
           onUpdateObject(updatedObj);
+          if (onPoseModified) onPoseModified(currentFrameIndex);
           renderCanvasContent();
         }
         return;
@@ -477,25 +584,26 @@ export default function CanvasArea({
     if (!canvas) return;
 
     if (appMode === 'movie') {
-      if (movieFramesRef.current.length <= 1) {
-        movieFramesRef.current = [];
+      // 1. Initialize stroke canvas for recording this live stroke layer
+      if (!strokeCanvasRef.current) {
+        strokeCanvasRef.current = document.createElement('canvas');
+        strokeCanvasRef.current.width = CANVAS_WIDTH;
+        strokeCanvasRef.current.height = CANVAS_HEIGHT;
       }
-      const initialSnap = canvas.toDataURL();
-      if (movieFramesRef.current.length === 0) {
-        movieFramesRef.current.push(initialSnap);
+      const strokeCtx = strokeCanvasRef.current.getContext('2d');
+      strokeCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+      // 2. Cache current frames so existing drawings are NEVER lost or overridden
+      // "example i write a line it ended infrome 20. i again go to 1 frame and start writeing another line both should be there dont override"
+      movieStartIndexRef.current = currentFrameIndex;
+      movieFrameTickRef.current = 0;
+      existingMovieFramesRef.current = [...frames];
+      movieFramesRef.current = [...frames];
+
+      if (movieTimerRef.current) {
+        clearInterval(movieTimerRef.current);
+        movieTimerRef.current = null;
       }
-      if (movieTimerRef.current) clearInterval(movieTimerRef.current);
-      const intervalMs = Math.round(1000 / Math.max(1, fps));
-      movieTimerRef.current = setInterval(() => {
-        if (!isDrawingRef.current) return;
-        const currentCanvas = mainCanvasRef.current;
-        if (!currentCanvas) return;
-        const currentSnap = currentCanvas.toDataURL();
-        movieFramesRef.current.push(currentSnap);
-        if (onMovieLiveUpdate) {
-          onMovieLiveUpdate([...movieFramesRef.current]);
-        }
-      }, intervalMs);
     } else {
       pushHistory(canvas.toDataURL());
     }
@@ -516,6 +624,61 @@ export default function CanvasArea({
       ctx.fillStyle = activeTool === 'eraser' ? '#FFFFFF' : strokeColor;
       ctx.fill();
       ctx.restore();
+
+      // If in Movie mode, also draw initial dot to strokeCanvasRef
+      if (appMode === 'movie' && strokeCanvasRef.current) {
+        const sCtx = strokeCanvasRef.current.getContext('2d');
+        sCtx.save();
+        if (activeTool === 'eraser') {
+          sCtx.strokeStyle = '#FFFFFF';
+          sCtx.lineWidth = strokeSize * 1.5;
+          sCtx.lineCap = 'round';
+          sCtx.lineJoin = 'round';
+        } else {
+          applyStrokeStyle(sCtx, pencilType, strokeSize, strokeColor);
+        }
+        sCtx.beginPath();
+        sCtx.arc(coords.x, coords.y, (activeTool === 'eraser' ? strokeSize * 1.5 : strokeSize) / 2, 0, Math.PI * 2);
+        sCtx.fillStyle = activeTool === 'eraser' ? '#FFFFFF' : strokeColor;
+        sCtx.fill();
+        sCtx.restore();
+      }
+    }
+
+    if (appMode === 'movie') {
+      // Immediately composite initial touch point snapshot
+      const startIdx = movieStartIndexRef.current;
+      const baseCanvas = getFrameCanvas(startIdx, existingMovieFramesRef.current[startIdx]);
+      const combined = compositeStrokeOntoBase(baseCanvas, strokeCanvasRef.current);
+      frameCanvasesRef.current[startIdx] = combined;
+      movieFramesRef.current[startIdx] = combined.toDataURL();
+      if (onMovieLiveUpdate) {
+        onMovieLiveUpdate([...movieFramesRef.current], startIdx);
+      }
+
+      // Interval captures progressive stroke frames forward at live FPS
+      const intervalMs = Math.round(1000 / Math.max(1, fps));
+      movieTimerRef.current = setInterval(() => {
+        if (!isDrawingRef.current) return;
+        movieFrameTickRef.current += 1;
+        const currentTargetIdx = movieStartIndexRef.current + movieFrameTickRef.current;
+
+        let baseImg;
+        if (currentTargetIdx < existingMovieFramesRef.current.length) {
+          baseImg = getFrameCanvas(currentTargetIdx, existingMovieFramesRef.current[currentTargetIdx]);
+        } else {
+          const lastIdx = existingMovieFramesRef.current.length - 1;
+          baseImg = getFrameCanvas(lastIdx, existingMovieFramesRef.current[lastIdx]);
+        }
+
+        const combinedFrame = compositeStrokeOntoBase(baseImg, strokeCanvasRef.current);
+        frameCanvasesRef.current[currentTargetIdx] = combinedFrame;
+        movieFramesRef.current[currentTargetIdx] = combinedFrame.toDataURL();
+
+        if (onMovieLiveUpdate) {
+          onMovieLiveUpdate([...movieFramesRef.current], currentTargetIdx);
+        }
+      }, intervalMs);
     }
   };
 
@@ -627,6 +790,93 @@ export default function CanvasArea({
         return;
       }
 
+      // 5. HOVER OVERLAY: POINT TOOL ("in point we add points")
+      if (objectTool === 'point') {
+        overlayCtx.save();
+        overlayCtx.beginPath();
+        overlayCtx.arc(coords.x, coords.y, 6, 0, Math.PI * 2);
+        overlayCtx.fillStyle = '#10b981';
+        overlayCtx.fill();
+        overlayCtx.strokeStyle = '#ffffff';
+        overlayCtx.lineWidth = 2;
+        overlayCtx.stroke();
+
+        overlayCtx.beginPath();
+        overlayCtx.arc(coords.x, coords.y, 14, 0, Math.PI * 2);
+        overlayCtx.strokeStyle = 'rgba(16, 185, 129, 0.7)';
+        overlayCtx.lineWidth = 1.5;
+        overlayCtx.setLineDash([3, 3]);
+        overlayCtx.stroke();
+        overlayCtx.restore();
+        return;
+      }
+
+      // 6. HOVER OVERLAY: JOINT TOOL ("in joint we tap bw point that point should joint")
+      if (objectTool === 'joint') {
+        overlayCtx.save();
+        if (jointFirstPointId) {
+          const ptA = selectedObject?.bones?.find((b) => b.id === jointFirstPointId);
+          if (ptA) {
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(ptA.x, ptA.y);
+            overlayCtx.lineTo(coords.x, coords.y);
+            overlayCtx.strokeStyle = '#c084fc';
+            overlayCtx.lineWidth = 2.5;
+            overlayCtx.setLineDash([5, 5]);
+            overlayCtx.stroke();
+
+            // Tooltip pill
+            overlayCtx.fillStyle = '#7c3aed';
+            overlayCtx.fillRect(coords.x + 12, coords.y - 20, 150, 24);
+            overlayCtx.fillStyle = '#ffffff';
+            overlayCtx.font = 'bold 11px sans-serif';
+            overlayCtx.fillText('Click 2nd point to Joint', coords.x + 18, coords.y - 4);
+          }
+        } else {
+          // Check if hovering strictly between two points
+          const candidate = findPointsToJointBetween(coords.x, coords.y, selectedObject?.bones);
+          if (candidate) {
+            // Draw candidate connection line
+            overlayCtx.beginPath();
+            overlayCtx.moveTo(candidate.pA.x, candidate.pA.y);
+            overlayCtx.lineTo(candidate.pB.x, candidate.pB.y);
+            overlayCtx.strokeStyle = '#a855f7';
+            overlayCtx.lineWidth = 3;
+            overlayCtx.setLineDash([6, 6]);
+            overlayCtx.stroke();
+
+            // Highlight candidate endpoints
+            overlayCtx.setLineDash([]);
+            [candidate.pA, candidate.pB].forEach((pt) => {
+              overlayCtx.beginPath();
+              overlayCtx.arc(pt.x, pt.y, 14, 0, Math.PI * 2);
+              overlayCtx.strokeStyle = '#c084fc';
+              overlayCtx.lineWidth = 2;
+              overlayCtx.stroke();
+            });
+
+            // Badge at projection point
+            const badgeW = 100;
+            const badgeH = 22;
+            overlayCtx.fillStyle = '#6b21a8';
+            overlayCtx.strokeStyle = '#c084fc';
+            overlayCtx.lineWidth = 1.5;
+            overlayCtx.beginPath();
+            overlayCtx.rect(candidate.projX - badgeW / 2, candidate.projY - badgeH / 2, badgeW, badgeH);
+            overlayCtx.fill();
+            overlayCtx.stroke();
+
+            overlayCtx.fillStyle = '#ffffff';
+            overlayCtx.font = 'bold 11px sans-serif';
+            overlayCtx.textAlign = 'center';
+            overlayCtx.textBaseline = 'middle';
+            overlayCtx.fillText('🔗 Tap to Joint', candidate.projX, candidate.projY);
+          }
+        }
+        overlayCtx.restore();
+        return;
+      }
+
       return;
     }
 
@@ -680,6 +930,39 @@ export default function CanvasArea({
         ctx.stroke();
       }
       ctx.restore();
+
+      // If in Movie mode, also draw segment to strokeCanvasRef
+      if (appMode === 'movie' && strokeCanvasRef.current) {
+        const sCtx = strokeCanvasRef.current.getContext('2d');
+        sCtx.save();
+        if (activeTool === 'eraser') {
+          sCtx.strokeStyle = '#FFFFFF';
+          sCtx.lineWidth = strokeSize * 1.5;
+          sCtx.lineCap = 'round';
+          sCtx.lineJoin = 'round';
+          sCtx.beginPath();
+          sCtx.moveTo(lastPoint.x, lastPoint.y);
+          sCtx.lineTo(coords.x, coords.y);
+          sCtx.stroke();
+        } else if (pencilType === 'calligraphy') {
+          sCtx.strokeStyle = strokeColor;
+          sCtx.lineWidth = strokeSize;
+          sCtx.lineCap = 'butt';
+          sCtx.beginPath();
+          sCtx.moveTo(lastPoint.x - strokeSize / 2, lastPoint.y - strokeSize / 2);
+          sCtx.lineTo(coords.x - strokeSize / 2, coords.y - strokeSize / 2);
+          sCtx.moveTo(lastPoint.x + strokeSize / 2, lastPoint.y + strokeSize / 2);
+          sCtx.lineTo(coords.x + strokeSize / 2, coords.y + strokeSize / 2);
+          sCtx.stroke();
+        } else {
+          applyStrokeStyle(sCtx, pencilType, strokeSize, strokeColor);
+          sCtx.beginPath();
+          sCtx.moveTo(lastPoint.x, lastPoint.y);
+          sCtx.lineTo(coords.x, coords.y);
+          sCtx.stroke();
+        }
+        sCtx.restore();
+      }
 
       setLastPoint({ x: coords.x, y: coords.y });
     } else if (activeTool === 'shape') {
@@ -781,13 +1064,40 @@ export default function CanvasArea({
         clearInterval(movieTimerRef.current);
         movieTimerRef.current = null;
       }
-      if (canvas) {
-        const finalSnap = canvas.toDataURL();
-        movieFramesRef.current.push(finalSnap);
-        if (onMovieCommit) {
-          onMovieCommit([...movieFramesRef.current]);
+
+      const lastDrawnIdx = movieStartIndexRef.current + movieFrameTickRef.current;
+
+      // 1. Snapshot for the last drawn frame position
+      let baseImg;
+      if (existingMovieFramesRef.current && lastDrawnIdx < existingMovieFramesRef.current.length) {
+        baseImg = getFrameCanvas(lastDrawnIdx, existingMovieFramesRef.current[lastDrawnIdx]);
+      } else if (existingMovieFramesRef.current && existingMovieFramesRef.current.length > 0) {
+        const lastIdx = existingMovieFramesRef.current.length - 1;
+        baseImg = getFrameCanvas(lastIdx, existingMovieFramesRef.current[lastIdx]);
+      }
+
+      if (strokeCanvasRef.current) {
+        const finalCombined = compositeStrokeOntoBase(baseImg, strokeCanvasRef.current);
+        frameCanvasesRef.current[lastDrawnIdx] = finalCombined;
+        movieFramesRef.current[lastDrawnIdx] = finalCombined.toDataURL();
+      }
+
+      // 2. CRUCIAL: Do not override later frames!
+      // "example i write a line it ended infrome 20. i again go to 1 frame and start writeing another line both should be there dont override"
+      // If there are existing frames after lastDrawnIdx, composite the complete stroke onto all of them!
+      if (existingMovieFramesRef.current && lastDrawnIdx < existingMovieFramesRef.current.length - 1 && strokeCanvasRef.current) {
+        for (let m = lastDrawnIdx + 1; m < existingMovieFramesRef.current.length; m++) {
+          const laterBase = getFrameCanvas(m, existingMovieFramesRef.current[m]);
+          const laterCombined = compositeStrokeOntoBase(laterBase, strokeCanvasRef.current);
+          frameCanvasesRef.current[m] = laterCombined;
+          movieFramesRef.current[m] = laterCombined.toDataURL();
         }
       }
+
+      if (onMovieCommit) {
+        onMovieCommit([...movieFramesRef.current], lastDrawnIdx);
+      }
+
       if (overlay) {
         const overlayCtx = overlay.getContext('2d');
         overlayCtx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
@@ -829,6 +1139,8 @@ export default function CanvasArea({
     if (isDraggingObjectRef.current || isRotatingObjectRef.current) return 'grabbing';
     if (objectTool === 'rotate') return 'alias';
     if (objectTool === 'move') return 'grab';
+    if (objectTool === 'point') return 'crosshair';
+    if (objectTool === 'joint') return 'pointer';
     if (objectTool === 'bones') return 'cell';
     return 'default';
   };
@@ -844,6 +1156,12 @@ export default function CanvasArea({
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            if (onOpenCreateObjectDialog) {
+              onOpenCreateObjectDialog(currentFrameIndex);
+            }
+          }}
           onPointerLeave={() => {
             if (isDrawingRef.current) handlePointerUp({});
             isDraggingObjectRef.current = false;
@@ -950,7 +1268,17 @@ export default function CanvasArea({
             </span>
           ) : appMode === 'object' ? (
             <span className="meta-tag object-live-tag">
-              🦴 OBJECT MODE: {objectTool.toUpperCase()} • {objects.length} Objects in Left Panel
+              🦴 OBJECT MODE: {objectTool.toUpperCase()} • {
+                objectTool === 'point'
+                  ? '📍 Click drawing to add points'
+                  : objectTool === 'joint'
+                  ? (jointFirstPointId ? '🔗 Click 2nd point to Joint' : '🔗 Tap between 2 points to Joint them')
+                  : objectTool === 'move'
+                  ? '✋ Drag points to move'
+                  : objectTool === 'rotate'
+                  ? '🔄 Rotate bones around parent'
+                  : `${objects.length} Objects in Left Panel`
+              }
             </span>
           ) : appMode === 'movie' ? (
             <span className="meta-tag movie-live-tag">
